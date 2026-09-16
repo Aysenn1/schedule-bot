@@ -4,38 +4,36 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <regex>
 #include <ctime>
+#include <sstream>
+#include <algorithm>
 #include <memory>
 
-// --- Переменные окружения ---
 const std::string BOT_TOKEN = std::getenv("BOT_TOKEN") ? std::getenv("BOT_TOKEN") : "";
 const std::string YADISK_URL = std::getenv("YADISK_URL") ? std::getenv("YADISK_URL") : "";
 const std::string WEBHOOK_HOST = std::getenv("WEBHOOK_HOST") ? std::getenv("WEBHOOK_HOST") : "";
 const int PORT = std::getenv("PORT") ? std::stoi(std::getenv("PORT")) : 8080;
 
-// --- Хранилище выбранных групп (chat_id -> group_name) ---
 std::unordered_map<long long, std::string> user_groups;
 
-// --- Список групп для кнопок (добавь сюда все свои группы) ---
+// Список всех групп из твоего файла
 const std::vector<std::string> GROUPS = {
-    "ТС-26-1", "ТС-26-2", "ТС-25-1", "ТС-25-2", "ТС-24",
-    "СИСА-26-1", "СИСА-26-2", "РИС-26-1", "РИС-26",
-    "РБП-26-2", "РБП-26", "РМП-26-3", "РМП-26",
-    "ВР-26-4", "ВР-26",
-    "ТЭСИС-26-1", "ТЭСИС-26-2", "ТЭСИС-26-3",
-    "ОИБАС-26", "ИССС-26-1", "ИССС-26-2",
-    "СИСА-25-1", "СИСА-25-2",
-    "ИСИП-25-1", "ИСИП-25-2", "ИСИП-25-3", 
-    "ИСИП-25-4", "ИСИП-25-5", "ИСИП-25-6",
-    "ОИБАС-25", "ИССС-25",
-    "СИСА-24-1", "СИСА-24-2",
-    "ИСИП-24-1", "ИСИП-24-2", "ИСИП-24-3",
-    "ИСИП-24-4", "ИСИП-24-5", "ИСИП-24-6",
-    "ОИБАС-24", "ИССС-24"
+    "КИТ-ТС-26-1", "КИТ-ТС-26-2", "КИТ-ТС-25-1", "КИТ-ТС-25-2", "КИТ-ТС-24",
+    "КИТ-СИСА-26-1", "КИТ-СИСА-26-2", "КИТ-РИС-26-1", "КИТ-РИС-26",
+    "КИТ-РБП-26-2", "КИТ-РБП-26", "КИТ-РМП-26-3", "КИТ-РМП-26",
+    "КИТ-ВР-26-4", "КИТ-ВР-26",
+    "КИТ-ТЭСИС-26-1", "КИТ-ТЭСИС-26-2", "КИТ-ТЭСИС-26-3",
+    "КИТ-ОИБАС-26", "КИТ-ИССС-26-1", "КИТ-ИССС-26-2",
+    "КИТ-СИСА-25-1", "КИТ-СИСА-25-2",
+    "КИТ-ИСИП-25-1", "КИТ-ИСИП-25-2", "КИТ-ИСИП-25-3", 
+    "КИТ-ИСИП-25-4", "КИТ-ИСИП-25-5", "КИТ-ИСИП-25-6",
+    "КИТ-ОИБАС-25", "КИТ-ИССС-25",
+    "КИТ-СИСА-24-1", "КИТ-СИСА-24-2",
+    "КИТ-ИСИП-24-1", "КИТ-ИСИП-24-2", "КИТ-ИСИП-24-3",
+    "КИТ-ИСИП-24-4", "КИТ-ИСИП-24-5", "КИТ-ИСИП-24-6",
+    "КИТ-ОИБАС-24", "КИТ-ИССС-24"
 };
 
-// --- HTTP запрос через curl ---
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
@@ -56,89 +54,135 @@ std::string http_get(const std::string& url) {
     return readBuffer;
 }
 
-// --- Скачивание файла с Яндекс.Диска ---
 std::string fetch_yadisk_file() {
     std::string api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + YADISK_URL;
     std::string response = http_get(api_url);
-    
-    // Простой парсинг JSON без сторонних библиотек (ищем "href":"...")
     size_t pos = response.find("\"href\":\"");
     if (pos == std::string::npos) return "";
     pos += 8;
     size_t end_pos = response.find("\"", pos);
     std::string download_link = response.substr(pos, end_pos - pos);
-    
     return http_get(download_link);
 }
 
-// --- Получение даты в формате ДДММГГ (как в твоем файле) ---
-std::string get_date(int days_offset) {
+// Получение текстовой даты (например, "17 сентября") с учетом Якутского времени (+9)
+std::string get_text_date(int days_offset) {
     std::time_t t = std::time(nullptr);
-    std::tm tm = *std::localtime(&t);
+    std::tm tm = *std::gmtime(&t);
+    tm.tm_hour += 9; // Якутск
     tm.tm_mday += days_offset;
-    std::mktime(&tm); // Нормализует дату (переносит месяцы/годы)
-    
-    char buffer[7];
-    std::strftime(buffer, sizeof(buffer), "%d%m%y", &tm);
-    return std::string(buffer);
+    std::mktime(&tm);
+
+    const char* months[] = {
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря"
+    };
+
+    return std::to_string(tm.tm_mday) + " " + months[tm.tm_mon];
 }
 
-// --- Поиск расписания в тексте ---
-std::string find_schedule(const std::string& full_text, const std::string& date_code, const std::string& group) {
-    // 1. Ищем блок нужной даты (например, "170926")
-    size_t date_pos = full_text.find(date_code);
-    if (date_pos == std::string::npos) return "❌ Расписание на эту дату не найдено в файле.";
-    
-    // Ищем следующую дату, чтобы ограничить поиск
-    // Даты в файле идут как 6 цифр в начале строки. 
-    // Для простоты просто ищем следующую группу или конец файла от текущей даты
-    size_t next_date_pos = full_text.find("\n|", date_pos + 6); // Упрощенный поиск конца блока
-    
-    // 2. Ищем группу ВНУТРИ этого временного промежутка
-    // Чтобы не искать по всему файлу, сузим область поиска
-    std::string search_area = full_text.substr(date_pos); 
-    
-    std::string group_header = group + " -"; // В файле формат "КИТ-СИСА-26-1 - 33 СТУДЕНТА"
-    size_t group_pos = search_area.find(group_header);
-    
-    if (group_pos == std::string::npos) {
-        return "❌ Группа " + group + " не найдена на эту дату.";
+std::string trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\n\r");
+    if (first == std::string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\n\r");
+    return str.substr(first, (last - first + 1));
+}
+
+// Умный парсер под твой Markdown-файл
+std::string parse_schedule(const std::string& full_text, const std::string& text_date, const std::string& group) {
+    // 1. Ищем блок нужной даты по тексту (например, "17 сентября")
+    size_t date_start = full_text.find(text_date);
+    if (date_start == std::string::npos) {
+        return "❌ Расписание на эту дату не найдено в файле.";
     }
+
+    // 2. Ищем начало следующего блока даты, чтобы ограничить поиск
+    // Будем искать следующее вхождение " сентября", " октября" и т.д.
+    size_t next_date_start = full_text.length();
+    const char* months_search[] = {
+        " января", " февраля", " марта", " апреля", " мая", " июня",
+        " июля", " августа", " сентября", " октября", " ноября", " декабря"
+    };
     
-    // 3. Вырезаем расписание до следующей группы
-    // Следующая группа обычно начинается с новой строки и содержит "СТУДЕНТ"
-    size_t end_pos = search_area.find("СТУДЕНТ", group_pos + group_header.length());
-    if (end_pos != std::string::npos) {
-        // Откатываемся назад до начала строки следующей группы
-        end_pos = search_area.rfind("\n", end_pos);
-    } else {
-        end_pos = search_area.length();
-    }
-    
-    std::string raw_schedule = search_area.substr(group_pos, end_pos - group_pos);
-    
-    // 4. Очистка от Markdown-таблицы (удаляем "|", "---", пустые строки)
-    std::string clean_text;
-    std::istringstream stream(raw_schedule);
-    std::string line;
-    while (std::getline(stream, line)) {
-        // Удаляем символы таблицы
-        line.erase(std::remove(line.begin(), line.end(), '|'), line.end());
-        
-        // Пропускаем разделители и дублирующиеся заголовки групп
-        if (line.find("---") != std::string::npos) continue;
-        if (line.find("СТУДЕНТ") != std::string::npos) continue;
-        if (line.find("Время") != std::string::npos && line.find("Дисциплина") != std::string::npos) continue;
-        
-        // Удаляем лишние пробелы по краям
-        size_t start = line.find_first_not_of(" \t\n\r");
-        size_t end = line.find_last_not_of(" \t\n\r");
-        if (start != std::string::npos) {
-            clean_text += line.substr(start, end - start + 1) + "\n";
+    for (const auto& m : months_search) {
+        size_t pos = full_text.find(m, date_start + text_date.length());
+        if (pos != std::string::npos && pos < next_date_start) {
+            // Отматываем назад до цифры дня
+            size_t day_pos = pos;
+            while(day_pos > 0 && isdigit(full_text[day_pos-1])) day_pos--;
+            if (day_pos < next_date_start) next_date_start = day_pos;
         }
     }
+
+    std::string day_block = full_text.substr(date_start, next_date_start - date_start);
+
+    // 3. Ищем группу внутри этого дня
+    // В файле бывает "| КИТ-СИСА-26-1 - 33" или "| КИТ-РБП-26  30"
+    std::string group_marker1 = "| " + group + " -";
+    std::string group_marker2 = "| " + group + " ";
     
-    return clean_text.empty() ? "😴 На эту дату пар нет!" : clean_text;
+    size_t group_pos = day_block.find(group_marker1);
+    if (group_pos == std::string::npos) {
+        group_pos = day_block.find(group_marker2);
+    }
+
+    if (group_pos == std::string::npos) {
+        return "😴 У группы " + group + " нет пар на эту дату.";
+    }
+
+    // 4. Ищем конец блока группы (начало следующей группы "КИТ-")
+    size_t end_pos = day_block.find("\n| КИТ-", group_pos + 10);
+    if (end_pos == std::string::npos) {
+        end_pos = day_block.find("\nКИТ-", group_pos + 10); // На случай если нет палки
+    }
+    if (end_pos == std::string::npos) end_pos = day_block.length();
+
+    std::string raw_schedule = day_block.substr(group_pos, end_pos - group_pos);
+
+    // 5. Парсим строки таблицы
+    std::string clean_text = "📅 *Расписание на " + text_date + "*\n🎓 *" + group + "*\n\n";
+    std::istringstream stream(raw_schedule);
+    std::string line;
+    bool has_lessons = false;
+
+    while (std::getline(stream, line)) {
+        if (line.find("---") != std::string::npos) continue;
+        if (line.find("СТУДЕНТ") != std::string::npos) continue;
+        if (line.find("Время") != std::string::npos) continue;
+        if (line.find("Расписания учебных занятий") != std::string::npos) continue;
+        if (line.find("Курс") != std::string::npos) continue;
+
+        std::vector<std::string> columns;
+        std::stringstream ss(line);
+        std::string item;
+        while (std::getline(ss, item, '|')) {
+            columns.push_back(trim(item));
+        }
+
+        // Структура: [0: ПН/ВТ/СР], [1: Время], [2: Предмет], [3: Вид], [4: Препод], [5: Ауд]
+        if (columns.size() >= 6) {
+            std::string time_str = columns[1];
+            std::string subject = columns[2];
+            std::string room = columns[5];
+
+            // Если есть время и предмет (игнорируем пустые окна и странные записи без предмета)
+            if (time_str.find("-") != std::string::npos && !subject.empty()) {
+                has_lessons = true;
+                clean_text += "⏰ `" + time_str + "`\n";
+                clean_text += "📖 " + subject + "\n";
+                if (!room.empty()) {
+                    clean_text += "📍 Ауд: " + room + "\n";
+                }
+                clean_text += "\n";
+            }
+        }
+    }
+
+    if (!has_lessons) {
+        return "😴 У группы " + group + " нет пар на эту дату (одни окна).";
+    }
+
+    return clean_text;
 }
 
 int main() {
@@ -149,16 +193,14 @@ int main() {
 
     TgBot::Bot bot(BOT_TOKEN);
 
-    // === КОМАНДА /start ===
     bot.getEvents().onCommand("start", [&bot](TgBot::Message::Ptr message) {
         auto keyboard = std::make_shared<TgBot::InlineKeyboardMarkup>();
-        
-        // Создаем кнопки по 2 в ряд
         std::vector<TgBot::InlineKeyboardButton::Ptr> row;
+        
         for (const auto& group : GROUPS) {
             auto btn = std::make_shared<TgBot::InlineKeyboardButton>();
             btn->text = group;
-            btn->callbackData = "select_" + group;
+            btn->callbackData = "sel_" + group;
             row.push_back(btn);
             
             if (row.size() == 2) {
@@ -173,18 +215,14 @@ int main() {
             false, 0, keyboard);
     });
 
-    // === ОБРАБОТКА НАЖАТИЯ КНОПОК (выбор группы) ===
     bot.getEvents().onCallbackQuery([&bot](TgBot::CallbackQuery::Ptr query) {
         std::string data = query->data;
         long long chatId = query->message->chat->id;
         
-        if (data.substr(0, 7) == "select_") {
-            std::string selected_group = data.substr(7);
-            
-            // Запоминаем группу в памяти
+        if (data.substr(0, 4) == "sel_") {
+            std::string selected_group = data.substr(4);
             user_groups[chatId] = selected_group;
             
-            // Обновляем сообщение
             bot.getApi().editMessageText(
                 "✅ Выбрана группа: *" + selected_group + "*\n\n"
                 "Теперь используй команды:\n"
@@ -193,23 +231,20 @@ int main() {
                 "/dayafter — на послезавтра",
                 chatId, query->message->messageId, "", "Markdown");
                 
-            // Отвечаем на callback (чтобы часы загрузки исчезли)
             bot.getApi().answerCallbackQuery(query->id, "Группа сохранена!");
         }
     });
 
-    // === КОМАНДЫ РАСПИСАНИЯ ===
     auto handle_schedule = [&](TgBot::Message::Ptr message, int days_offset) {
         long long chatId = message->chat->id;
         
-        // Проверяем, выбрал ли пользователь группу
         if (user_groups.find(chatId) == user_groups.end()) {
             bot.getApi().sendMessage(chatId, "⚠️ Сначала выбери группу через /start");
             return;
         }
         
         std::string group = user_groups[chatId];
-        std::string date_code = get_date(days_offset);
+        std::string text_date = get_text_date(days_offset);
         
         bot.getApi().sendMessage(chatId, "⏳ Загружаю расписание...");
         
@@ -219,21 +254,19 @@ int main() {
             return;
         }
         
-        std::string schedule = find_schedule(file_content, date_code, group);
+        std::string schedule = parse_schedule(file_content, text_date, group);
         
-        // Telegram имеет лимит 4096 символов
         if (schedule.length() > 4000) {
             schedule = schedule.substr(0, 4000) + "\n\n... (расписание обрезано)";
         }
         
-        bot.getApi().sendMessage(chatId, schedule);
+        bot.getApi().sendMessage(chatId, schedule, false, 0, nullptr, "Markdown");
     };
 
     bot.getEvents().onCommand("today", [&](TgBot::Message::Ptr msg) { handle_schedule(msg, 0); });
     bot.getEvents().onCommand("tomorrow", [&](TgBot::Message::Ptr msg) { handle_schedule(msg, 1); });
     bot.getEvents().onCommand("dayafter", [&](TgBot::Message::Ptr msg) { handle_schedule(msg, 2); });
 
-    // === Установка Webhook ===
     try {
         std::string webhook_url = WEBHOOK_HOST + "/webhook";
         std::cout << "Setting webhook: " << webhook_url << std::endl;
