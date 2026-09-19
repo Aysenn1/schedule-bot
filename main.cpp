@@ -9,11 +9,11 @@
 #include <algorithm>
 #include <memory>
 
+// Переменные окружения (можно задать через export в терминале)
 const std::string BOT_TOKEN = std::getenv("BOT_TOKEN") ? std::getenv("BOT_TOKEN") : "";
 const std::string YADISK_URL = std::getenv("YADISK_URL") ? std::getenv("YADISK_URL") : "";
-const std::string WEBHOOK_HOST = std::getenv("WEBHOOK_HOST") ? std::getenv("WEBHOOK_HOST") : "";
-const int PORT = std::getenv("PORT") ? std::stoi(std::getenv("PORT")) : 8080;
 
+// Хранилище выбранных групп (chat_id -> group_name)
 std::unordered_map<long long, std::string> user_groups;
 
 // Список всех групп из твоего файла
@@ -34,11 +34,13 @@ const std::vector<std::string> GROUPS = {
     "КИТ-ОИБАС-24", "КИТ-ИССС-24"
 };
 
+// Callback для curl
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
+// HTTP GET запрос
 std::string http_get(const std::string& url) {
     CURL* curl;
     std::string readBuffer;
@@ -54,24 +56,28 @@ std::string http_get(const std::string& url) {
     return readBuffer;
 }
 
+// Скачивание файла с Яндекс.Диска
 std::string fetch_yadisk_file() {
     std::string api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + YADISK_URL;
     std::string response = http_get(api_url);
+    
+    // Парсим JSON ответ от Яндекса вручную (ищем "href":"...")
     size_t pos = response.find("\"href\":\"");
     if (pos == std::string::npos) return "";
     pos += 8;
     size_t end_pos = response.find("\"", pos);
     std::string download_link = response.substr(pos, end_pos - pos);
+    
     return http_get(download_link);
 }
 
 // Получение текстовой даты (например, "17 сентября") с учетом Якутского времени (+9)
 std::string get_text_date(int days_offset) {
     std::time_t t = std::time(nullptr);
-    std::tm tm = *std::gmtime(&t);
-    tm.tm_hour += 9; // Якутск
-    tm.tm_mday += days_offset;
-    std::mktime(&tm);
+    std::tm tm = *std::gmtime(&t); // Берем UTC
+    tm.tm_hour += 9; // Добавляем 9 часов (Якутск)
+    tm.tm_mday += days_offset; // Добавляем дни (для tomorrow/dayafter)
+    std::mktime(&tm); // Нормализуем структуру времени
 
     const char* months[] = {
         "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -81,6 +87,7 @@ std::string get_text_date(int days_offset) {
     return std::to_string(tm.tm_mday) + " " + months[tm.tm_mon];
 }
 
+// Вспомогательная функция для удаления пробелов по краям строки
 std::string trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\n\r");
     if (first == std::string::npos) return "";
@@ -97,7 +104,6 @@ std::string parse_schedule(const std::string& full_text, const std::string& text
     }
 
     // 2. Ищем начало следующего блока даты, чтобы ограничить поиск
-    // Будем искать следующее вхождение " сентября", " октября" и т.д.
     size_t next_date_start = full_text.length();
     const char* months_search[] = {
         " января", " февраля", " марта", " апреля", " мая", " июня",
@@ -117,7 +123,7 @@ std::string parse_schedule(const std::string& full_text, const std::string& text
     std::string day_block = full_text.substr(date_start, next_date_start - date_start);
 
     // 3. Ищем группу внутри этого дня
-    // В файле бывает "| КИТ-СИСА-26-1 - 33" или "| КИТ-РБП-26  30"
+    // В файле бывает "| КИТ-СИСА-26-1 - 33" или "| КИТ-РБП-26  30" (без дефиса)
     std::string group_marker1 = "| " + group + " -";
     std::string group_marker2 = "| " + group + " ";
     
@@ -133,25 +139,27 @@ std::string parse_schedule(const std::string& full_text, const std::string& text
     // 4. Ищем конец блока группы (начало следующей группы "КИТ-")
     size_t end_pos = day_block.find("\n| КИТ-", group_pos + 10);
     if (end_pos == std::string::npos) {
-        end_pos = day_block.find("\nКИТ-", group_pos + 10); // На случай если нет палки
+        end_pos = day_block.find("\nКИТ-", group_pos + 10); // На случай если нет палки в начале
     }
     if (end_pos == std::string::npos) end_pos = day_block.length();
 
     std::string raw_schedule = day_block.substr(group_pos, end_pos - group_pos);
 
-    // 5. Парсим строки таблицы
+    // 5. Парсим строки таблицы и очищаем от мусора
     std::string clean_text = "📅 *Расписание на " + text_date + "*\n🎓 *" + group + "*\n\n";
     std::istringstream stream(raw_schedule);
     std::string line;
     bool has_lessons = false;
 
     while (std::getline(stream, line)) {
+        // Пропускаем разделители и заголовки
         if (line.find("---") != std::string::npos) continue;
         if (line.find("СТУДЕНТ") != std::string::npos) continue;
         if (line.find("Время") != std::string::npos) continue;
         if (line.find("Расписания учебных занятий") != std::string::npos) continue;
         if (line.find("Курс") != std::string::npos) continue;
 
+        // Разбиваем строку по символу '|'
         std::vector<std::string> columns;
         std::stringstream ss(line);
         std::string item;
@@ -159,13 +167,13 @@ std::string parse_schedule(const std::string& full_text, const std::string& text
             columns.push_back(trim(item));
         }
 
-        // Структура: [0: ПН/ВТ/СР], [1: Время], [2: Предмет], [3: Вид], [4: Препод], [5: Ауд]
+        // Структура твоей таблицы: [0: ПН/ВТ], [1: Время], [2: Предмет], [3: Вид], [4: Препод], [5: Ауд]
         if (columns.size() >= 6) {
             std::string time_str = columns[1];
             std::string subject = columns[2];
             std::string room = columns[5];
 
-            // Если есть время и предмет (игнорируем пустые окна и странные записи без предмета)
+            // Если есть время (содержит "-") и предмет не пустой — это реальная пара
             if (time_str.find("-") != std::string::npos && !subject.empty()) {
                 has_lessons = true;
                 clean_text += "⏰ `" + time_str + "`\n";
@@ -186,13 +194,18 @@ std::string parse_schedule(const std::string& full_text, const std::string& text
 }
 
 int main() {
-    if (BOT_TOKEN.empty()) {
-        std::cerr << "Ошибка: Не задан BOT_TOKEN!" << std::endl;
+    // Если переменные окружения не заданы, используем заглушки (для локального теста)
+    std::string token = BOT_TOKEN.empty() ? "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН" : BOT_TOKEN;
+    std::string yadisk = YADISK_URL.empty() ? "https://disk.360.yandex.ru/i/bfF89K1c0tsG3g" : YADISK_URL;
+
+    if (token == "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН") {
+        std::cerr << "Ошибка: Не задана переменная окружения BOT_TOKEN!" << std::endl;
         return 1;
     }
 
-    TgBot::Bot bot(BOT_TOKEN);
+    TgBot::Bot bot(token);
 
+    // === КОМАНДА /start ===
     bot.getEvents().onCommand("start", [&bot](TgBot::Message::Ptr message) {
         auto keyboard = std::make_shared<TgBot::InlineKeyboardMarkup>();
         std::vector<TgBot::InlineKeyboardButton::Ptr> row;
@@ -215,14 +228,18 @@ int main() {
             false, 0, keyboard);
     });
 
+    // === ОБРАБОТКА НАЖАТИЯ КНОПОК (выбор группы) ===
     bot.getEvents().onCallbackQuery([&bot](TgBot::CallbackQuery::Ptr query) {
         std::string data = query->data;
         long long chatId = query->message->chat->id;
         
         if (data.substr(0, 4) == "sel_") {
             std::string selected_group = data.substr(4);
+            
+            // Запоминаем группу в памяти
             user_groups[chatId] = selected_group;
             
+            // Обновляем сообщение
             bot.getApi().editMessageText(
                 "✅ Выбрана группа: *" + selected_group + "*\n\n"
                 "Теперь используй команды:\n"
@@ -231,13 +248,16 @@ int main() {
                 "/dayafter — на послезавтра",
                 chatId, query->message->messageId, "", "Markdown");
                 
+            // Отвечаем на callback (чтобы часы загрузки исчезли)
             bot.getApi().answerCallbackQuery(query->id, "Группа сохранена!");
         }
     });
 
+    // === ЛОГИКА КОМАНД РАСПИСАНИЯ ===
     auto handle_schedule = [&](TgBot::Message::Ptr message, int days_offset) {
         long long chatId = message->chat->id;
         
+        // Проверяем, выбрал ли пользователь группу
         if (user_groups.find(chatId) == user_groups.end()) {
             bot.getApi().sendMessage(chatId, "⚠️ Сначала выбери группу через /start");
             return;
@@ -246,7 +266,7 @@ int main() {
         std::string group = user_groups[chatId];
         std::string text_date = get_text_date(days_offset);
         
-        bot.getApi().sendMessage(chatId, "⏳ Загружаю расписание...");
+        bot.getApi().sendMessage(chatId, "⏳ Загружаю расписание с Яндекс.Диска...");
         
         std::string file_content = fetch_yadisk_file();
         if (file_content.empty()) {
@@ -256,6 +276,7 @@ int main() {
         
         std::string schedule = parse_schedule(file_content, text_date, group);
         
+        // Telegram имеет лимит 4096 символов
         if (schedule.length() > 4000) {
             schedule = schedule.substr(0, 4000) + "\n\n... (расписание обрезано)";
         }
@@ -267,17 +288,18 @@ int main() {
     bot.getEvents().onCommand("tomorrow", [&](TgBot::Message::Ptr msg) { handle_schedule(msg, 1); });
     bot.getEvents().onCommand("dayafter", [&](TgBot::Message::Ptr msg) { handle_schedule(msg, 2); });
 
-    try {
-        std::string webhook_url = WEBHOOK_HOST + "/webhook";
-        std::cout << "Setting webhook: " << webhook_url << std::endl;
-        bot.getApi().setWebhook(webhook_url);
-    } catch (TgBot::TgException& e) {
-        std::cerr << "Webhook error: " << e.what() << std::endl;
+    std::cout << "Бот запущен локально (Long Polling)! Ожидаем сообщения..." << std::endl;
+    
+    // === ЗАПУСК LONG POLLING ===
+    // Бот сам постоянно опрашивает Telegram, никакой веб-сервер не нужен
+    TgBot::TgLongPoll longPoll(bot);
+    while (true) {
+        try {
+            longPoll.start();
+        } catch (TgBot::TgException& e) {
+            std::cerr << "Ошибка соединения: " << e.what() << std::endl;
+        }
     }
-
-    std::cout << "Bot started on port " << PORT << std::endl;
-    TgBot::TgWebhookTcpServer server(PORT, "/webhook", bot);
-    server.start();
 
     return 0;
 }
